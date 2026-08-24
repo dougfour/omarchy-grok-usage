@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.dougfour.grok-usage",
+  "name": "Grok Usage",
+  "version": "1.0.0",
+  "author": "dougfour",
+  "license": "MIT",
+  "description": "Adds Grok Build usage to Omarchy's built-in AI agents bar panel.",
+  "kinds": ["service"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}
