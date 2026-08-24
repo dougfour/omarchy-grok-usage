@@ -1,10 +1,10 @@
 # Grok Usage
 
-Adds **Grok Build** to Omarchy's built-in AI agents bar panel (`omarchy.agents`).
+Adds **Grok** to Omarchy's **existing AI toolbar widget** — the AI icon already on the top bar. It does not add a second icon.
 
-Omarchy already meters Claude Code, Codex, and Fireworks. This plugin writes a Grok usage record in the same place, so the existing AI icon gains a Grok chip: weekly SuperGrok pool, Grok Build vs Chat split, and local token stats from `~/.grok/sessions`.
+After install, click that same AI button. You get a **Grok** chip next to **Claude Code** (and Codex / Fireworks if you use them): weekly SuperGrok pool, Grok Build vs Chat vs Imagine, and local token stats from `~/.grok/sessions`.
 
-It is a headless service. It does not add a second bar widget.
+![Grok inside the stock AI toolbar widget](preview.png)
 
 ## Install
 
@@ -14,17 +14,20 @@ omarchy plugin add https://github.com/dougfour/omarchy-grok-usage.git --enable
 
 Requires:
 
-- Omarchy with the stock `omarchy.agents` widget enabled (default)
+- Omarchy with the stock AI widget enabled (`omarchy.agents`, on by default)
 - Python 3 on `PATH` (stdlib only)
 - Grok Build signed in (`grok login`) so weekly limits can load
 
-Leave the built-in AI icon in the bar. After the first scan, click it and switch to **Grok**.
+Leave the built-in AI icon where it is. After the first scan, click it and switch to **Grok**.
 
 ## Usage
 
-- Left click the AI icon: usage panel (Claude, Codex, Fireworks, and Grok)
+- Left click the existing AI icon: usage panel
+- Switch to **Grok** with the chip in the panel (or middle-click the icon)
 - `r` or Enter in the panel: refresh (Grok follows the stock update)
-- Grok also refreshes about every 5 minutes, and when the stock panel rewrite of `claude.json` signals a refresh
+- Grok also refreshes about every 5 minutes
+
+This plugin is a headless service. It only writes a Grok usage record for the stock panel to display.
 
 Weekly percent comes from `https://cli-chat-proxy.grok.com/v1/billing?format=credits` using the token in `~/.grok/auth.json`. Token charts come from `~/.grok/sessions/**/updates.jsonl`.
 
@@ -34,7 +37,7 @@ Weekly percent comes from `https://cli-chat-proxy.grok.com/v1/billing?format=cre
 omarchy plugin remove io.github.dougfour.grok-usage
 ```
 
-Removal deletes the plugin checkout and drops `~/.local/state/omarchy/agents/usage/grok.json`, so the Grok tab leaves the panel. It does not change `~/.grok/auth.json` or session files.
+Removal deletes the plugin checkout and drops `~/.local/state/omarchy/agents/usage/grok.json`, so the Grok chip leaves the stock AI panel. It does not change `~/.grok/auth.json` or session files.
 
 ## Privacy
 

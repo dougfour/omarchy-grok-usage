@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "dougfour",
   "license": "MIT",
-  "description": "Adds Grok Build usage to Omarchy's built-in AI agents bar panel.",
+  "description": "Adds Grok to Omarchy's existing AI toolbar widget (the stock AI icon), not a new bar icon.",
   "kinds": ["service"],
   "keepLoaded": true,
   "entryPoints": {
