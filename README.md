@@ -4,8 +4,6 @@ Adds **Grok** to Omarchy's **existing AI toolbar widget** — the AI icon alread
 
 After install, click that same AI button. You get a **Grok** chip next to **Claude Code** (and Codex / Fireworks if you use them): weekly SuperGrok pool, Grok Build vs Chat vs Imagine, and local token stats from `~/.grok/sessions`.
 
-![Grok inside the stock AI toolbar widget](preview.png)
-
 ## Install
 
 ```sh
