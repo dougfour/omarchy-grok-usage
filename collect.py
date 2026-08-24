@@ -19,19 +19,25 @@ import fcntl
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 AGENT_ID = "grok"
 AGENT_NAME = "Grok"
 AUTH_HELP = "Run `grok login` to restore weekly usage limits."
 BILLING_ENDPOINT = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 PROBE_MIN_INTERVAL_SECONDS = 15
+MAX_AUTH_FILE_BYTES = 256 * 1024
+MAX_CACHE_FILE_BYTES = 1024 * 1024
+MAX_SESSION_FILE_BYTES = 32 * 1024 * 1024
+MAX_HTTP_BODY_BYTES = 256 * 1024
+MAX_JSONL_LINE_BYTES = 1024 * 1024
 
 
 def expand_path(value: str) -> Path:
@@ -116,6 +122,70 @@ def empty_stats() -> dict[str, Any]:
   }
 
 
+def open_regular_file(path: Path, max_bytes: int) -> int | None:
+  """Open path only if the fd is a regular file within max_bytes.
+
+  Type and size are taken from fstat on the descriptor after open, with
+  O_NOFOLLOW so a same-user symlink or fifo swap cannot block the collector
+  or redirect the read.
+  """
+  flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+  try:
+    fd = os.open(path, flags)
+  except OSError:
+    return None
+  try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_size < 0 or info.st_size > max_bytes:
+      os.close(fd)
+      return None
+    return fd
+  except OSError:
+    os.close(fd)
+    return None
+
+
+def read_regular_file(path: Path, max_bytes: int) -> bytes | None:
+  fd = open_regular_file(path, max_bytes)
+  if fd is None:
+    return None
+  try:
+    data = os.read(fd, max_bytes + 1)
+  except OSError:
+    os.close(fd)
+    return None
+  os.close(fd)
+  if len(data) > max_bytes:
+    return None
+  return data
+
+
+def read_limited_http_body(response: BinaryIO, max_bytes: int) -> bytes:
+  length = None
+  headers = getattr(response, "headers", None)
+  if headers is not None:
+    raw = headers.get("Content-Length")
+    if raw not in (None, ""):
+      try:
+        length = int(raw)
+      except (TypeError, ValueError):
+        length = None
+  if length is not None and (length < 0 or length > max_bytes):
+    raise ValueError("HTTP body exceeds size limit")
+
+  chunks: list[bytes] = []
+  total = 0
+  while True:
+    chunk = response.read(min(65536, max_bytes - total + 1))
+    if not chunk:
+      break
+    total += len(chunk)
+    if total > max_bytes:
+      raise ValueError("HTTP body exceeds size limit")
+    chunks.append(chunk)
+  return b"".join(chunks)
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
   handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
@@ -131,15 +201,27 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def read_fresh_json(path: Path, max_age_seconds: float) -> dict[str, Any] | None:
-  if max_age_seconds <= 0 or not path.exists():
+  if max_age_seconds <= 0:
+    return None
+  fd = open_regular_file(path, MAX_CACHE_FILE_BYTES)
+  if fd is None:
     return None
   try:
-    if time.time() - path.stat().st_mtime <= max_age_seconds:
-      data = json.loads(path.read_text(encoding="utf-8"))
-      return data if isinstance(data, dict) else None
+    info = os.fstat(fd)
+    if time.time() - info.st_mtime > max_age_seconds:
+      return None
+    raw = os.read(fd, MAX_CACHE_FILE_BYTES + 1)
+  except OSError:
+    return None
+  finally:
+    os.close(fd)
+  if len(raw) > MAX_CACHE_FILE_BYTES:
+    return None
+  try:
+    data = json.loads(raw.decode("utf-8"))
   except Exception:
     return None
-  return None
+  return data if isinstance(data, dict) else None
 
 
 # ---------------------------------------------------------------- local scan
@@ -163,9 +245,19 @@ def scan_sessions(sessions_dir: Path) -> dict[str, Any]:
   files = sessions_dir.glob("*/*/updates.jsonl") if sessions_dir.is_dir() else []
   for path in files:
     session_id = path.parent.name
+    fd = open_regular_file(path, MAX_SESSION_FILE_BYTES)
+    if fd is None:
+      continue
     try:
-      with path.open("r", encoding="utf-8", errors="replace") as handle:
+      with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as handle:
+        fd = -1
+        total_read = 0
         for line in handle:
+          total_read += len(line)
+          if total_read > MAX_SESSION_FILE_BYTES:
+            break
+          if len(line) > MAX_JSONL_LINE_BYTES:
+            continue
           if "turn_completed" not in line or '"usage"' not in line:
             continue
           try:
@@ -219,6 +311,12 @@ def scan_sessions(sessions_dir: Path) -> dict[str, Any]:
             today_tokens[model] = today_tokens.get(model, 0) + total
     except OSError:
       continue
+    finally:
+      if fd >= 0:
+        try:
+          os.close(fd)
+        except OSError:
+          pass
 
   if prompts <= 0:
     return empty_stats()
@@ -256,8 +354,11 @@ def cached_scan(sessions_dir: Path, max_age_seconds: float) -> dict[str, Any]:
 
 
 def access_token(auth_path: Path) -> tuple[str, str]:
+  raw = read_regular_file(auth_path, MAX_AUTH_FILE_BYTES)
+  if raw is None:
+    return "", ""
   try:
-    data = json.loads(auth_path.read_text(encoding="utf-8"))
+    data = json.loads(raw.decode("utf-8"))
   except Exception:
     return "", ""
   if not isinstance(data, dict):
@@ -326,8 +427,13 @@ def probe_limits(token: str) -> dict[str, Any]:
   )
   try:
     with urllib.request.urlopen(request, timeout=10) as response:
-      payload = json.loads(response.read().decode("utf-8", errors="replace"))
+      body = read_limited_http_body(response, MAX_HTTP_BODY_BYTES)
+      payload = json.loads(body.decode("utf-8", errors="replace"))
   except urllib.error.HTTPError as error:
+    try:
+      error.read(MAX_HTTP_BODY_BYTES)
+    except Exception:
+      pass
     if error.code in (401, 403):
       return {"ok": False, "helpText": "Grok sign-in is no longer valid. Run `grok login`. Local Grok stats are still shown."}
     return {"ok": False, "helpText": f"Grok billing returned status {error.code}. Local Grok stats are still shown."}
