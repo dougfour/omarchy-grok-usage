@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.dougfour.grok-usage",
   "name": "Grok Usage",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "dougfour",
   "license": "MIT",
   "description": "Adds Grok to Omarchy's existing AI toolbar widget (the stock AI icon), not a new bar icon.",

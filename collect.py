@@ -186,6 +186,29 @@ def read_limited_http_body(response: BinaryIO, max_bytes: int) -> bytes:
   return b"".join(chunks)
 
 
+def lock_regular_file(path: Path) -> int | None:
+  """Create or open a lock file without following a symlink, then flock it.
+
+  Path.open('w') truncates after a same-user symlink swap. O_NOFOLLOW plus
+  fstat on the fd keeps that from pointing at another file we own.
+  """
+  flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+  try:
+    fd = os.open(path, flags, 0o600)
+  except OSError:
+    return None
+  try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+      os.close(fd)
+      return None
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+  except OSError:
+    os.close(fd)
+    return None
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
   handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
@@ -340,14 +363,22 @@ def cached_scan(sessions_dir: Path, max_age_seconds: float) -> dict[str, Any]:
   cached = read_fresh_json(cache_file, max_age_seconds)
   if cached is not None and "totalPrompts" in cached:
     return cached
-  with lock_file.open("w") as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX)
+  lock_fd = lock_regular_file(lock_file)
+  if lock_fd is None:
+    return scan_sessions(sessions_dir)
+  try:
     cached = read_fresh_json(cache_file, max_age_seconds)
     if cached is not None and "totalPrompts" in cached:
       return cached
     stats = scan_sessions(sessions_dir)
     write_json(cache_file, stats)
     return stats
+  finally:
+    try:
+      fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    except OSError:
+      pass
+    os.close(lock_fd)
 
 
 # ------------------------------------------------------------------- limits
@@ -592,15 +623,10 @@ def main() -> int:
     return 0
 
   record = build_record(args.force, args.limits_only, args.cache_seconds)
-  encoded = json.dumps(record, separators=(",", ":"), sort_keys=True)
   if args.write:
-    dest = usage_dir() / "grok.json"
-    tmp = dest.with_name(".grok." + str(os.getpid()) + ".tmp")
-    tmp.write_text(encoded + "\n", encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(dest)
+    write_json(usage_dir() / "grok.json", record)
   else:
-    print(encoded)
+    print(json.dumps(record, separators=(",", ":"), sort_keys=True))
   return 0
 
 
